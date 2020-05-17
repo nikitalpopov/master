@@ -1,3 +1,4 @@
+import pyaudio
 import soundfile as sf
 from pydub import AudioSegment
 import pydub.scipy_effects
@@ -29,32 +30,8 @@ flatten = itertools.chain.from_iterable
 
 AudioSegment.converter = '/usr/local/Cellar/ffmpeg/4.2.2_2/bin/ffmpeg'
 
-color = {
-    -1: "black",
-    0: "red",
-    1: "orange",
-    2: "blue",
-    3: "brown",
-    4: "purple",
-    5: "plum",
-    6: "gray",
-    7: "khaki",
-    8: "magenta",
-    9: "cyan",
-    10: "lime",
-    11: "indigo",
-    12: "royalblue",
-    13: "dodgerblue",
-    14: "lightcoral"
-}
 
-
-def timeTicks(x, pos):
-    d = datetime.timedelta(seconds=x)
-    return str(d)[-5:] if x < 3600 else str(d)
-
-
-SENSITIVITY_MODE = 2  # 4 is supposed to be better for neural networks, but it's not
+SENSITIVITY_MODE = 3  # 4 is supposed to be better for neural networks, but it's not
 
 ## Define Voice Activity Detector
 vad = VAD(sensitivity_mode=SENSITIVITY_MODE)
@@ -137,12 +114,24 @@ def measure_metrics(reference, hypothesis):
     return der_value
 
 
-def run_file_diarization():
-    # SOURCE_FOLDER = 'ami_corpus'
-    # SOURCE_FILE = 'ES2002a.Mix-Headset.wav'
-    # TRANSCRIPTS = f'{SOURCE_FOLDER}/transcripts.json'
-    # N_SPEAKERS = 4
+def prepare_segment(filename, high_filter_value, low_filter_value):
+    audio_segment = AudioSegment.from_file(filename)
 
+    if audio_segment.sample_width != 2:
+        audio_segment = audio_segment.set_sample_width(2)
+    if audio_segment.channels != 1:
+        audio_segment = audio_segment.set_channels(1)
+
+    ## Apply 3rd order pass filters with given value
+    audio_segment = audio_segment.high_pass_filter(
+        high_filter_value, order=3)
+    audio_segment = audio_segment.low_pass_filter(
+        low_filter_value, order=3)
+
+    return audio_segment
+
+
+def run_file_diarization():
     SOURCE_FOLDER = 'records'
     SOURCE_FILE = 'Pumpkin_and_Honey_Bunny.wav'
     TRANSCRIPTS = f'{SOURCE_FOLDER}/transcripts.json'
@@ -152,6 +141,7 @@ def run_file_diarization():
     SR = 32000
 
     CHUNKS_FOLDER = 'chunks'
+    RESULTS_FOLDER = 'results'
 
     CUT_AUDIO = True
     CUT_LENGTH = 10. * 60.  # seconds
@@ -163,29 +153,10 @@ def run_file_diarization():
     else:
         wav, source_sr = librosa.load(FILEPATH, sr=SR)
 
-    print(len(wav))
-
     ## Load transcripts from prepared file and mark reference annotations
 
     with open(TRANSCRIPTS, 'r') as f:
         ami_corpus_transcripts = json.load(f)
-
-    SHOW_SPEAKER_SWITCHES = False
-
-    if SHOW_SPEAKER_SWITCHES:
-        if CUT_AUDIO:
-            speaker_switches = [t['start'] for i, t in enumerate(ami_corpus_transcripts)
-                                if i > 0
-                                and t['speaker_id'] != ami_corpus_transcripts[i - 1]['speaker_id']
-                                and t['end'] < CUT_LENGTH
-                                ]
-        else:
-            speaker_switches = [t['start'] for i, t in enumerate(ami_corpus_transcripts)
-                                if i > 0
-                                and t['speaker_id'] != ami_corpus_transcripts[i - 1]['speaker_id']
-                                ]
-
-        speaker_switches.insert(0, ami_corpus_transcripts[0]['start'])
 
     if CUT_AUDIO and CUT_LENGTH < len(wav):
         ami_corpus_transcripts = [
@@ -205,16 +176,17 @@ def run_file_diarization():
     encoder = VoiceEncoder()
 
     CHUNK_TIME_LENGTH = 2.5  # seconds
+    CHUNK_SIZE = ceil(CHUNK_TIME_LENGTH * SR)
     CHUNKS_OVERLAP = .15  # share (percents)
     SPEAKER_CHANGE_THRESHOLD = .3  # percents
-    FILTER_VALUE = 300
+    HIGH_FILTER_VALUE = 100
+    LOW_FILTER_VALUE = 7000
 
-    ## Clean chunks folder
-    filelist = [f for f in os.listdir(CHUNKS_FOLDER)]
-    for f in filelist:
-        os.remove(os.path.join(CHUNKS_FOLDER, f))
-
-    chunk_size = ceil(CHUNK_TIME_LENGTH * SR)
+    ## Clean folders
+    for folder in [CHUNKS_FOLDER, RESULTS_FOLDER]:
+        filelist = [f for f in os.listdir(folder)]
+        for f in filelist:
+            os.remove(os.path.join(folder, f))
 
     embeds = []
     speakers_ids = [0]
@@ -222,38 +194,31 @@ def run_file_diarization():
     vad_segments = []
 
     counter = 0
-    id = 0
 
     ## Process overlapping chunks
-    for i in range(0, len(wav), ceil(chunk_size * (1 - CHUNKS_OVERLAP))):
+    for i in range(0, len(wav), ceil(CHUNK_SIZE * (1 - CHUNKS_OVERLAP))):
         t_start = timer()
 
         start = i
-        end = i + chunk_size if i + chunk_size < len(wav) - 1 else len(wav) - 1
+        end = i + CHUNK_SIZE if i + CHUNK_SIZE < len(wav) - 1 else len(wav) - 1
 
         chunk = wav[start:end]
-        chunk = preprocess_wav(chunk)[0]
+        chunk = preprocess_wav(chunk)
 
         if (len(chunk) > 0):
             filename = f'chunks/chunk_{i}.wav'
             sf.write(filename, chunk, samplerate=SR)
-            audio = AudioSegment.from_file(filename)
+            audio_segment = prepare_segment(
+                filename, HIGH_FILTER_VALUE, LOW_FILTER_VALUE)
 
-            if audio.sample_width != 2:
-                audio = audio.set_sample_width(2)
-            if audio.channels != 1:
-                audio = audio.set_channels(1)
 
-            ## Apply 3rd order high pass filter with given value
-            audio = audio.high_pass_filter(FILTER_VALUE, order=3)
-
-            segments = get_vad_segments(audio)
+            segments = get_vad_segments(audio_segment)
 
             vad_segments += [(start + ceil(segment[0] * SR), start +
                             ceil(segment[1] * SR)) for segment in segments]
 
-            segments = [s for s in remove_overlap(
-                vad_segments) if s[1] - s[0] > .2 * SR]
+            segments = [s for s in remove_overlap(vad_segments) if s[1] - s[0] > 0]
+            segments = remove_overlap(vad_segments)
             segments = [(s[0] - start, s[1] - start)
                         for s in segments if s[0] >= start]
 
@@ -278,16 +243,25 @@ def run_file_diarization():
 
                     distances = sorted(distances, key=lambda x: x[0])
 
-                    best_id = distances[0][1]
-
-                    if distances[0][0] < SPEAKER_CHANGE_THRESHOLD:
-                        id = best_id
+                    if len(distances) > 0:
+                        if distances[0][0] < SPEAKER_CHANGE_THRESHOLD:
+                            id = distances[0][1]
+                        else:
+                            counter += 1
+                            id = counter
                     else:
                         counter += 1
                         id = counter
 
                     speakers_ids.append(id)
 
+                    speaker_segments.append({
+                        'start': start + seg_start,
+                        'end': start + seg_end,
+                        'speaker_id': id
+                    })
+                else:
+                    id = counter
                     speaker_segments.append({
                         'start': start + seg_start,
                         'end': start + seg_end,
@@ -300,144 +274,159 @@ def run_file_diarization():
         timers.append(t_end - t_start)
     print(np.mean(timers))
 
-    ## PyAnnote DER and other metrics
-    hypothesis = get_hypothesis(speaker_segments)
-    der_value = measure_metrics(reference, hypothesis)
-
     for speaker_id, segs in groupby(sorted(speaker_segments, key=lambda x: x['speaker_id']), lambda x: x['speaker_id']):
         print(f"Speaker {speaker_id}")
         audio = np.concatenate([wav[s['start']:s['end']] for s in segs], axis=0)
         print(audio.shape)
-        filename = f"results/speaker_{speaker_id}.wav"
+        filename = f"{RESULTS_FOLDER}/speaker_{speaker_id}.wav"
         sf.write(filename, audio, samplerate=SR)
 
 
-audio = []
-def callback(indata, frames, time, status):
-    global audio
-    audio.extend(indata.copy())
-
-    if status:
-        print(status, file=sys.stderr)
-
-
 def run_online_diarization():
-    global audio
-    do_record = True
+    audio = []
 
     SR = 32000
     CHUNKS_FOLDER = 'chunks'
+    RESULTS_FOLDER = 'results'
 
     ## Load voice encoder
     encoder = VoiceEncoder()
 
     CHUNK_TIME_LENGTH = 2.5  # seconds
+    CHUNK_SIZE = ceil(CHUNK_TIME_LENGTH * SR)
     CHUNKS_OVERLAP = .15  # share (percents)
     SPEAKER_CHANGE_THRESHOLD = .3  # percents
-    FILTER_VALUE = 300
+    HIGH_FILTER_VALUE = 200
+    LOW_FILTER_VALUE = 4000
 
-    ## Clean chunks folder
-    filelist = [f for f in os.listdir(CHUNKS_FOLDER)]
-    for f in filelist:
-        os.remove(os.path.join(CHUNKS_FOLDER, f))
+    ## Clean folders
+    for folder in [CHUNKS_FOLDER, RESULTS_FOLDER]:
+        filelist = [f for f in os.listdir(folder)]
+        for f in filelist:
+            os.remove(os.path.join(folder, f))
 
-    chunk_size = ceil(CHUNK_TIME_LENGTH * SR)
+    FORMAT = pyaudio.paFloat32
+    CHANNELS = 1
 
+    pa = pyaudio.PyAudio()
+
+    # start Recording
+    stream = pa.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=SR,
+        input=True,
+        frames_per_buffer=100
+    )
+
+    audio = []
+    chunk_container = []
     embeds = []
     speakers_ids = [0]
     speaker_segments = []
     vad_segments = []
 
     counter = 0
+    start = 0
     id = 0
     i = 0
 
     try:
-        with sd.InputStream(
-            samplerate=SR,
-            device=sd.default.device,
-            channels=1,
-            callback=callback
-        ):
-            print('Press Ctrl+C to stop the recording')
-            t_start = timer()
+        while True:
+            data = stream.read(100, exception_on_overflow=False)
+            recorded = np.array(np.fromstring(data, dtype=np.float32))
 
-            while do_record:
-                if (len(audio) % ceil(chunk_size * (1 - CHUNKS_OVERLAP)) == 0):
-                    start = chunk_size
-                    if (len(audio) < start):
-                        start = len(audio)
+            audio = np.append(audio, recorded)
+            chunk_container = np.append(chunk_container, recorded)
 
-                    chunk = audio[:-start]
-                    chunk = preprocess_wav(chunk)[0]
+            if (len(chunk_container) >= CHUNK_SIZE):
+                chunk = chunk_container.copy()
+                chunk_container = []
+                chunk = preprocess_wav(chunk)
+                counter += 1
 
-                    if (len(chunk) > 0):
-                        filename = f'chunks/chunk_{i}.wav'
-                        sf.write(filename, chunk, samplerate=SR)
-                        audio = AudioSegment.from_file(filename)
+                if (len(chunk) > 0):
+                    filename = f'{CHUNKS_FOLDER}/chunk_{i}.wav'
+                    sf.write(filename, chunk, samplerate=SR)
+                    audio_segment = prepare_segment(
+                        filename, HIGH_FILTER_VALUE, LOW_FILTER_VALUE)
 
-                        if audio.sample_width != 2:
-                            audio = audio.set_sample_width(2)
-                        if audio.channels != 1:
-                            audio = audio.set_channels(1)
+                    segments = get_vad_segments(audio_segment)
 
-                        ## Apply 3rd order high pass filter with given value
-                        audio = audio.high_pass_filter(FILTER_VALUE, order=3)
+                    vad_segments += [(start + ceil(segment[0] * SR), start +
+                                    ceil(segment[1] * SR)) for segment in segments]
 
-                        segments = get_vad_segments(audio)
+                    segments = [s for s in remove_overlap(
+                        vad_segments) if s[1] - s[0] > .2 * SR]
+                    segments = [(s[0] - start, s[1] - start)
+                                for s in segments if s[0] >= start]
 
-                        vad_segments += [(start + ceil(segment[0] * SR), start +
-                                        ceil(segment[1] * SR)) for segment in segments]
+                    for segment in segments:
+                        seg_start, seg_end = segment
+                        frame = chunk[seg_start:seg_end]
+                        embed = encoder.embed_utterance(frame)
 
-                        segments = [s for s in remove_overlap(
-                            vad_segments) if s[1] - s[0] > .2 * SR]
-                        segments = [(s[0] - start, s[1] - start)
-                                    for s in segments if s[0] >= start]
+                        if len(embeds) > 0:
+                            distances = []
+                            for speaker_id, speaker_embeddings in groupby(sorted(embeds, key=lambda x: x[1]), lambda x: x[1]):
+                                es = [e for e, s_id in list(speaker_embeddings)]
 
-                        for segment in segments:
-                            seg_start, seg_end = segment
-                            frame = chunk[seg_start:seg_end]
-                            embed = encoder.embed_utterance(frame)
+                                mean_dist = np.mean(
+                                    [get_similarity(embed, embedding) for embedding in es])
+                                min_dist = np.min(
+                                    [get_similarity(embed, embedding) for embedding in es])
+                                max_dist = np.max(
+                                    [get_similarity(embed, embedding) for embedding in es])
 
-                            if len(embeds) > 0:
-                                distances = []
-                                for speaker_id, speaker_embeddings in groupby(sorted(embeds, key=lambda x: x[1]), lambda x: x[1]):
-                                    es = [e for e, s_id in list(speaker_embeddings)]
+                                distances.append((min_dist, speaker_id))
 
-                                    mean_dist = np.mean(
-                                        [get_similarity(embed, embedding) for embedding in es])
-                                    min_dist = np.min(
-                                        [get_similarity(embed, embedding) for embedding in es])
-                                    max_dist = np.max(
-                                        [get_similarity(embed, embedding) for embedding in es])
+                            distances = sorted(distances, key=lambda x: x[0])
 
-                                    distances.append((min_dist, speaker_id))
-
-                                distances = sorted(distances, key=lambda x: x[0])
-
-                                best_id = distances[0][1]
-
+                            if len(distances) > 0:
                                 if distances[0][0] < SPEAKER_CHANGE_THRESHOLD:
-                                    id = best_id
+                                    id = distances[0][1]
                                 else:
                                     counter += 1
                                     id = counter
+                            else:
+                                counter += 1
+                                id = counter
 
-                                speakers_ids.append(id)
+                            speakers_ids.append(id)
 
-                                speaker_segments.append({
-                                    'start': start + seg_start,
-                                    'end': start + seg_end,
-                                    'speaker_id': id
-                                })
+                            speaker_segments.append({
+                                'start': start + seg_start,
+                                'end': start + seg_end,
+                                'speaker_id': id
+                            })
+                        else:
+                            id = counter
+                            speaker_segments.append({
+                                'start': start + seg_start,
+                                'end': start + seg_end,
+                                'speaker_id': id
+                            })
 
-                            embeds.append((embed, id))
-                            print(f"Speaker {id} was speaking now")
-                    i += 1
+                        embeds.append((embed, id))
+                        print(f'{datetime.datetime.now()}: Speaker {id} was speaking now')
+                i += 1
+                chunk_container = audio[-ceil(CHUNK_SIZE *
+                                              CHUNKS_OVERLAP):].copy()
+                start = len(audio)-ceil(CHUNK_SIZE * CHUNKS_OVERLAP)
 
     except KeyboardInterrupt:
         print('Recording has finished')
-        do_record = False
+
+        for speaker_id, segs in groupby(sorted(speaker_segments, key=lambda x: x['speaker_id']), lambda x: x['speaker_id']):
+            audio_speaker = np.concatenate([audio[s['start']:s['end']]
+                                            for s in segs], axis=0)
+            filename = f'{RESULTS_FOLDER}/speaker_{speaker_id}.wav'
+            sf.write(filename, audio_speaker, samplerate=SR)
+
+        sf.write(f'{RESULTS_FOLDER}/audio_record.wav', audio, samplerate=SR)
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
 
         pass
 

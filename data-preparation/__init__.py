@@ -54,15 +54,19 @@ def parse_ami_transcript_xml(file, speaker_id):
     return transcript
 
 
+AMI_CORPUS_FOLDER = 'ami-corpus'
+RECORDING_ID = 'ES2002a'
+SPEAKERS = ['A', 'B', 'C', 'D']
+
 if __name__ == "__main__":
     speakers_phrases = []
 
-    for index, speaker in enumerate(['A', 'B', 'C', 'D']):
+    for index, speaker in enumerate(SPEAKERS):
         t = parse_ami_transcript_xml(
-            "ami-corpus/ES2002a.{}.words.xml".format(speaker), index)
+            f"{AMI_CORPUS_FOLDER}/{RECORDING_ID}.{speaker}.words.xml", index)
         speakers_phrases.extend(t)
 
     final = sorted(speakers_phrases, key=itemgetter('start'))
 
-    with open('ami-corpus/transcripts.json', 'w') as f:
+    with open(f'{AMI_CORPUS_FOLDER}/transcripts.json', 'w') as f:
         json.dump(final, f)
