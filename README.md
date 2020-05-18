@@ -3,6 +3,7 @@
 
 ```bash
 $ pip3 install -r requirements.txt
+$ pip3 install git+https://github.com/Desklop/WebRTCVAD_Wrapper
 $ mkdir results
 $ mkdir chunks
 ```
