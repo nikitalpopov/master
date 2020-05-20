@@ -54,7 +54,7 @@ def parse_ami_transcript_xml(file, speaker_id):
     return transcript
 
 
-AMI_CORPUS_FOLDER = 'ami-corpus'
+AMI_CORPUS_FOLDER = 'ami_corpus'
 RECORDING_ID = 'ES2002a'
 SPEAKERS = ['A', 'B', 'C', 'D']
 

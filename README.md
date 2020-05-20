@@ -5,7 +5,7 @@
 ```bash
 $ sudo apt-get install libasound-dev portaudio19-dev libportaudio2 libportaudiocpp0 ffmpeg python-pyaudio python3-pyaudio
 $ pip3 install git+https://github.com/Desklop/WebRTCVAD_Wrapper
-$ pip3 install SoundFile pyannote.core pyannote.audio pyannote.metrics scipy pydub numpy librosa sounddevice webrtcvad PyAudio
+$ pip3 install lxml SoundFile pyannote.core pyannote.audio pyannote.metrics scipy pydub numpy librosa sounddevice webrtcvad PyAudio
 $ pip3 install --no-cache-dir Resemblyzer
 $ mkdir results
 $ mkdir chunks
