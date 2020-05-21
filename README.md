@@ -1,5 +1,7 @@
 # Master
 
+Master's thesis for unsupervised online speaker diarization
+
 ## To start
 
 ```bash
