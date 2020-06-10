@@ -68,5 +68,5 @@ if __name__ == "__main__":
 
     final = sorted(speakers_phrases, key=itemgetter('start'))
 
-    with open(f'{AMI_CORPUS_FOLDER}/transcripts.json', 'w') as f:
+    with open(f'{AMI_CORPUS_FOLDER}/transcripts_a.json', 'w') as f:
         json.dump(final, f)
